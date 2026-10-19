@@ -1,0 +1,23 @@
+# 游戏资源文件 (不入库, 自行获取)
+*.pak
+*.utoc
+*.ucas
+
+# 解压与生成产物
+extracted/
+categorized/
+mod_test/
+分类清单.json
+分类报告.md
+tools/_catcache.pkl
+tools/_pngcache/
+tools/_*.bin
+tools/_*.pkl
+tools/__pycache__/
+__pycache__/
+*.pyc
+
+# 本地环境
+*.log
+.DS_Store
+Thumbs.db
