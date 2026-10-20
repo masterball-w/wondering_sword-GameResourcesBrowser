@@ -40,6 +40,7 @@
 | 📖 剧情文本 | .locres 本地化文本全量浏览与过滤（含全部中文文本） |
 | 📊 数据表格 | DataTable 真实表格预览（行×列、双击复制） |
 | 🧊 模型预览 | Static/Skeletal Mesh 顶点点云 3D 预览（拖动旋转/缩放） |
+| ✨ 粒子特效 | ParticleSystem 材质纹理链解析 + 实时粒子模拟（SubUV 图集动画/加法混合） |
 | 📦 多格式导出 | PNG / OGG / TXT / 全帧 zip / 原始 uasset+uexp zip |
 | 🛠️ 资源替换 | 补丁 pak 秒级打包（放游戏 Paks 目录即生效）或完整 pak 重建 |
 
@@ -59,6 +60,9 @@
 
 ### 数据表格 —— DataTable 真实表格预览（110+ 张游戏数值表）
 ![数据表格](screenshots/05_datatable.png)
+
+### 粒子特效 —— 实时粒子模拟预览（纹理图集 + 发射器参数）
+![粒子特效](screenshots/06_particle.png)
 
 ## 🚀 快速开始
 

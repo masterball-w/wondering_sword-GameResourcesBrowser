@@ -287,21 +287,48 @@ class Package:
         return False
 
     def _find_export_table(self, d, from_pos, names=None):
-        """签名扫描; 要求前方导入区可按 28/32/36/40B 切分且 FName 索引合法"""
+        """找导出链起点: ≥3 条等距(44..256B)签名, 且前方区域可解析为合法导入"""
         ths = self.total_header_size
-        limit = self.total_header_size
+        limit = min(len(d), ths)
+        cands = []
         p = from_pos
         while p + 52 <= limit:
             ss, so = struct.unpack_from("<qq", d, p + 28)
             ci = struct.unpack_from("<i", d, p)[0]
+            ni = struct.unpack_from("<i", d, p + 16)[0]
             ok_off = (ths <= so <= ths + len(self.uexp) + 16
                       or (0 < so < ths and 8 <= ss and so + ss <= ths))
-            if 0 < ss and ok_off and -2000 <= ci <= 2000:
-                imp_len = p - from_pos
-                if imp_len == 0 or any(imp_len % s == 0 for s in (28, 32, 36, 40)):
-                    if names is None or self._imports_valid(d, names, from_pos, p):
-                        return p
+            if (0 < ss and ok_off and -2000 <= ci <= 2000
+                    and names is not None and 0 <= ni < len(names) and names[ni] != "None"):
+                cands.append(p)
             p += 4
+        if not cands:
+            return None
+        cs = set(cands)
+        chains = []
+        for i in range(len(cands)):
+            for j in range(i + 1, min(i + 8, len(cands))):
+                stride = cands[j] - cands[i]
+                if stride < 44 or stride > 256:
+                    continue
+                run = 2
+                q = cands[j] + stride
+                while q in cs:
+                    run += 1
+                    q += stride
+                chains.append((run, cands[i]))
+        chains.sort(key=lambda x: -x[0])
+        for run, ep in chains:
+            imp_len = ep - from_pos
+            if imp_len == 0 or any(imp_len % s == 0 for s in (28, 32, 36, 40)):
+                if names is None or self._imports_valid(d, names, from_pos, ep):
+                    return ep
+        # 无链时回退: 逐候选尝试 (单导出包等)
+        for ep in cands:
+            imp_len = ep - from_pos
+            if imp_len == 0 or any(imp_len % s == 0 for s in (28, 32, 36, 40)):
+                if names is None or self._imports_valid(d, names, from_pos, ep):
+                    return ep
         return None
 
     def _fname(self, r: Reader) -> str:

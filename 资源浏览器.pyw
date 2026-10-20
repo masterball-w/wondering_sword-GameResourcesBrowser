@@ -354,6 +354,12 @@ async function render(it,a){
       </tr></thead><tbody>
       ${a.rows.map(r=>`<tr>${r.map((c,i)=>`<td style="padding:2px 8px;border:1px solid var(--line);${i===0?'color:var(--ok)':''}" title="${esc(String(c))}" ondblclick="navigator.clipboard.writeText(String.raw\`${esc(String(c)).replace(/`/g,'')}\`)">${esc(fmtv(c))}</td>`).join('')}</tr>`).join('')}
       </tbody></table></div>`;
+  }else if(a.kind==='particle'){
+    body.innerHTML=`<div class="btns"><button id="pplay">▶ 播放</button><span class="dim" id="pstat"></span></div>
+      <canvas id="pcv" style="width:100%;height:56vh;background:#050608;border:1px solid var(--line)"></canvas>
+      <div class="meta">${a.note} · 模块: ${a.modules.slice(0,6).join(', ')}${a.modules.length>6?'…':''}</div>
+      <div id="ptexs" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>`;
+    showParticle(a);
   }else if(a.kind==='mesh'){
     body.innerHTML=`<div class="btns"><span class="dim" id="mstat"></span></div>
       <canvas id="cv3d" style="width:100%;height:60vh;background:#0d0f13;border:1px solid var(--line);cursor:grab"></canvas>
@@ -373,6 +379,82 @@ function fmtv(v){
   }
   const s=String(v);return s.length>80?s.slice(0,80)+'…':s;
 }
+async function showParticle(a){
+  const cv=$('pcv');
+  const dpr=window.devicePixelRatio||1;
+  cv.width=cv.clientWidth*dpr;cv.height=cv.clientHeight*dpr;
+  const ctx=cv.getContext('2d');ctx.scale(dpr,dpr);
+  const W=cv.clientWidth,H=cv.clientHeight;
+  // 加载纹理
+  const imgs=await Promise.all(a.textures.slice(0,4).map(t=>
+    new Promise(res=>{const im=new Image();
+      im.onload=()=>res(im);im.onerror=()=>res(null);
+      im.src='/api/tex?path='+encodeURIComponent(t);})));
+  const valid=imgs.filter(Boolean);
+  if(!valid.length){ctx.fillStyle='#666';ctx.fillText('纹理加载失败',20,30);return;}
+  // 纹理缩略
+  const pt=$('ptexs');
+  valid.forEach((im,i)=>{
+    const c=document.createElement('canvas');c.width=72;c.height=72;
+    c.style.cssText='border:1px solid var(--line);background:#000';
+    c.getContext('2d').drawImage(im,0,0,72,72);
+    pt.appendChild(c);
+  });
+  // 粒子模拟
+  const parts=[];
+  const N=Math.min(80,20+a.emitters*10);
+  let playing=false,raf=null,frame=0;
+  function spawn(){
+    const im=valid[Math.floor(Math.random()*valid.length)];
+    // SubUV 图集: 随机取一个格子
+    let sx=0,sy=0,sw=im.width,sh=im.height;
+    const cell=Math.min(6,Math.floor(im.width/im.height)||1);
+    if(cell>1){sw=im.width/cell;sh=im.height;
+      sx=Math.floor(Math.random()*cell)*sw;}
+    parts.push({im,sx,sy,sw,sh,
+      x:W/2+(Math.random()-0.5)*W*0.5, y:H*0.75+(Math.random()-0.5)*H*0.25,
+      vx:(Math.random()-0.5)*0.8, vy:-(0.4+Math.random()*1.6),
+      rot:Math.random()*6.28, vr:(Math.random()-0.5)*0.04,
+      size:30+Math.random()*70, life:1, decay:0.004+Math.random()*0.008,
+      grow:1+Math.random()*0.015, cell, cellIdx:Math.floor(Math.random()*cell), cellSpd:0.02+Math.random()*0.04,
+      hue:Math.random()*30});
+  }
+  for(let i=0;i<N*0.4;i++)spawn();
+  function draw(){
+    if(!playing)return;
+    frame++;
+    ctx.fillStyle='rgba(5,6,8,0.22)';
+    ctx.fillRect(0,0,W,H);
+    ctx.globalCompositeOperation='lighter';
+    for(let i=parts.length-1;i>=0;i--){
+      const p=parts[i];
+      p.x+=p.vx;p.y+=p.vy;p.vy*=0.998;p.rot+=p.vr;
+      p.size*=p.grow;p.life-=p.decay;
+      if(p.life<=0||p.size<2||p.y<-p.size){parts.splice(i,1);continue;}
+      // SubUV 动画
+      if(p.cell>1){p.cellIdx=(p.cellIdx+p.cellSpd)%p.cell;
+        p.sx=Math.floor(p.cellIdx)*p.sw;}
+      const s=p.size*p.life+4;
+      ctx.save();
+      ctx.translate(p.x,p.y);ctx.rotate(p.rot);
+      ctx.globalAlpha=Math.min(1,p.life)*0.85;
+      ctx.drawImage(p.im,p.sx,p.sy,p.sw,p.sh,-s/2,-s/2,s,s);
+      ctx.restore();
+    }
+    ctx.globalCompositeOperation='source-over';
+    if(parts.length<N&&frame%2===0)spawn();
+    $('pstat').textContent=`${parts.length} 粒子 · ${valid.length} 纹理 · 帧 ${frame}`;
+    raf=requestAnimationFrame(draw);
+  }
+  function play(){
+    playing=!playing;
+    $('pplay').textContent=playing?'⏸ 暂停':'▶ 播放';
+    if(playing)draw();else cancelAnimationFrame(raf);
+  }
+  $('pplay').onclick=play;
+  play();
+}
+
 function showMesh(a){
   const cv=$('cv3d');
   const dpr=window.devicePixelRatio||1;
@@ -830,6 +912,21 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(dict(kind="props", type="数据表格", note="行数据解析失败"))
             return
+        if cls in ("DistributionFloatConstant",) or (
+                any(e.name.startswith("ParticleSpriteEmitter") for e in pkg.exports)):
+            try:
+                pi = DB.particle_info(stem)
+            except Exception:
+                pi = None
+            if pi and pi["textures"]:
+                self._json(dict(kind="particle", type="粒子特效",
+                                emitters=pi["emitters"], modules=pi["modules"],
+                                textures=pi["textures"], note=f'{pi["emitters"]} 发射器 · {len(pi["textures"])} 纹理'))
+                return
+            if pi:
+                self._json(dict(kind="props", type="粒子特效",
+                                note=f'{pi["emitters"]} 发射器 · 无可用纹理'))
+                return
         base_name = stem.rsplit("/", 1)[-1]
         if cls in ("StaticMesh", "SkeletalMesh", "NavCollision") or (
                 cls in ("BodySetup",) and base_name.startswith(("SM_", "SK_"))) or (

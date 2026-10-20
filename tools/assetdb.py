@@ -490,3 +490,94 @@ class AssetDB:
             bbox=[min(xs), min(ys), min(zs), max(xs), max(ys), max(zs)],
             pts=[round(v, 3) for v in pts_out],
         )
+
+    # ---------------------------------------------- 特效
+    def _resolve_import(self, pkg, idx):
+        """导入表项 → /Game/ 完整路径 (outer 链)"""
+        if idx >= 0 or -idx > len(pkg.imports):
+            return None
+        imp = pkg.imports[-idx - 1]
+        cp, cn, outer, nm, num = imp
+        if cn == "Package":
+            return nm  # 包导入本身就是路径
+        if outer < 0 and -outer <= len(pkg.imports):
+            base = self._resolve_import(pkg, outer)
+            if base:
+                return base.rstrip("/") + "/" + nm
+        return nm
+
+    def _textures_of_material(self, path, depth=0, seen=None):
+        """MIC/Material → 其引用的 Texture2D pak 路径"""
+        if seen is None:
+            seen = set()
+        if depth > 2 or path in seen:
+            return []
+        seen.add(path)
+        pak_path = self.game_path_to_pak(path)
+        if (pak_path + ".uasset") not in self.entries:
+            # 对象路径 → 包路径 (去掉末尾对象名)
+            pak_path = pak_path.rsplit("/", 1)[0]
+            if (pak_path + ".uasset") not in self.entries:
+                return []
+        try:
+            pkg = self.package_of(pak_path)
+        except Exception:
+            return []
+        out = []
+        for i, (cp, cn, outer, nm, num) in enumerate(pkg.imports, 1):
+            full = self._resolve_import(pkg, -i)
+            if cn == "Texture2D" and full and full.startswith("/Game/"):
+                out.append(self.game_path_to_pak(full))
+            elif cn in ("MaterialInstanceConstant", "Material") and full and full.startswith("/Game/"):
+                out.extend(self._textures_of_material(full, depth + 1, seen))
+        return out
+
+    def particle_info(self, stem: str):
+        """Cascade ParticleSystem → 发射器/模块/纹理"""
+        pkg = self.package_of(stem)
+        emitters = []
+        modules = set()
+        for e in pkg.exports:
+            if e.name.startswith("ParticleSpriteEmitter"):
+                emitters.append(e.name)
+            elif e.name.startswith("ParticleModule"):
+                modules.add(e.name.rsplit("_", 1)[0])
+        # 收集材质 → 纹理
+        mats = []
+        for i, (cp, cn, outer, nm, num) in enumerate(pkg.imports, 1):
+            full = self._resolve_import(pkg, -i)
+            if cn in ("MaterialInstanceConstant", "Material") and full and full.startswith("/Game/"):
+                mats.append(full)
+        texs = []
+        seen = set()
+        for m in mats[:6]:
+            for t in self._textures_of_material(m):
+                if t not in seen:
+                    seen.add(t)
+                    texs.append(t)
+        # PS 直接导入的纹理
+        for i, (cp, cn, outer, nm, num) in enumerate(pkg.imports, 1):
+            full = self._resolve_import(pkg, -i)
+            if cn == "Texture2D" and full and full.startswith("/Game/"):
+                t = self.game_path_to_pak(full)
+                if t not in seen:
+                    seen.add(t)
+                    texs.append(t)
+        # 路径规范化 (对象路径 → 包路径) + 过滤有效纹理
+        valid = []
+        vseen = set()
+        for t in texs:
+            if (t + ".uasset") not in self.entries:
+                t = t.rsplit("/", 1)[0]
+            if t in vseen or (t + ".uasset") not in self.entries:
+                continue
+            try:
+                ti = self.texture_info(t)
+                if ti and ti.get("mip"):
+                    vseen.add(t)
+                    valid.append(t)
+            except Exception:
+                pass
+            if len(valid) >= 8:
+                break
+        return dict(emitters=len(emitters), modules=sorted(modules), textures=valid)
