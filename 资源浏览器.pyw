@@ -352,8 +352,13 @@ async function render(it,a){
       <canvas id="cv" style="image-rendering:pixelated"></canvas><div class="meta" id="tinfo"></div>`;
     await showSprite(a);
   }else if(a.kind==='animseq'){
-    body.innerHTML=`<div class="btns"><button id="play">▶ 播放</button>
-      <button onclick="loc2('/api/gif?path=${enc(it.p)}')">导出 GIF 动画</button>
+    body.innerHTML=`<div class="btns">
+      <button id="play">▶ 播放</button>
+      <span class="dim">帧范围:</span>
+      <input id="fstart" type="number" style="width:52px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:3px 6px;border-radius:4px" value="0">
+      <span class="dim">~</span>
+      <input id="fend" type="number" style="width:52px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:3px 6px;border-radius:4px" value="${a.frames.length-1}">
+      <button id="fgif">导出 GIF</button>
       <span class="dim" id="fstat"></span></div>
       <canvas id="cv" style="image-rendering:pixelated"></canvas><div id="frames"></div><div class="meta" id="tinfo"></div>`;
     await showAnimSeq(a);
@@ -639,20 +644,48 @@ async function showAnimSeq(a){
   cv.style.maxWidth=maxw*4+'px';
   const ctx=cv.getContext('2d');ctx.imageSmoothingEnabled=false;
   let cur=0,playing=false,timer=null;
+  function range(){
+    const s=Math.max(0,parseInt($('fstart').value)||0);
+    const e=Math.min(F.length-1,parseInt($('fend').value)||F.length-1);
+    return [s,e];
+  }
   function draw(i){
     ctx.clearRect(0,0,cv.width,cv.height);
     const f=F[i];
     const sy=t.h-f.y-f.h;
     ctx.drawImage(off,f.x,sy,f.w,f.h,0,0,cv.width,cv.height);
-    $('fstat').textContent=`帧 ${i+1}/${F.length} · ${f.name||f.n} (${f.x},${f.y}) ${f.w}×${f.h}`;
+    const [s,e]=range();
+    $('fstat').textContent=`帧 ${i+1}/${F.length} (播放 ${s+1}~${e+1}) · ${f.name||f.n} (${f.x},${f.y})`;
   }
   function play(){
     playing=!playing;
     $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
-    if(playing)timer=setInterval(()=>{cur=(cur+1)%F.length;draw(cur)},1000/a.fps);
+    if(playing){
+      timer=setInterval(()=>{
+        const [s,e]=range();
+        cur=cur+1;
+        if(cur>e)cur=s;
+        if(cur<s)cur=s;
+        draw(cur);
+      },1000/a.fps);
+    }
     else clearInterval(timer);
   }
   $('play').onclick=play;
+  $('fgif').onclick=()=>{
+    const [s,e]=range();
+    const f0=F[s],f1=F[e];
+    loc2(`/api/gif?path=${enc0(it.p)}&start=${f0.n}&end=${f1.n}`);
+  };
+  // 帧条高亮当前范围
+  function updateHl(){
+    const [s,e]=range();
+    document.querySelectorAll('#frames canvas').forEach((c,k)=>{
+      c.style.borderColor=(k>=s&&k<=e)?'#5aa2ff':'#2e333d';
+      c.style.opacity=(k>=s&&k<=e)?'1':'0.3';
+    });
+  }
+  $('fstart').oninput=$('fend').oninput=()=>{updateHl();if(!playing)draw(cur)};
   const fr=$('frames');
   F.forEach((f,i)=>{
     const c=document.createElement('canvas');c.width=f.w;c.height=f.h;
@@ -662,7 +695,7 @@ async function showAnimSeq(a){
     c.onclick=()=>{cur=i;draw(i)};
     fr.appendChild(c);
   });
-  draw(0);setTimeout(play,300);
+  draw(0);updateHl();setTimeout(play,300);
 }
 
 async function showFlipbook(a){
@@ -1084,6 +1117,8 @@ class Handler(BaseHTTPRequestHandler):
     def _api_gif(self, q):
         stem = q.get("path", [""])[0]
         fps = int(q.get("fps", ["10"])[0])
+        start = q.get("start", [None])[0]
+        end = q.get("end", [None])[0]
         frames = None
         # 1) 精灵序列
         try:
@@ -1102,6 +1137,18 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if not frames:
             self._json({"err": "无帧数据"}, 404)
+            return
+        # 帧范围裁剪
+        if start is not None or end is not None:
+            ns = [f["n"] for f in frames]
+            if start is not None:
+                s = int(start)
+                frames = [f for f in frames if f["n"] >= s]
+            if end is not None:
+                e = int(end)
+                frames = [f for f in frames if f["n"] <= e]
+        if not frames:
+            self._json({"err": "帧范围为空"}, 400)
             return
         try:
             gif = DB.gif_from_frames(frames, fps=fps)
