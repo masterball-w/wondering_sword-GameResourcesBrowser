@@ -379,12 +379,14 @@ class AssetDB:
         none_i = pkg.names.index("None") if "None" in pkg.names else -1
         cols = []
         rows = []
-        for e in pkg.exports:
+        for e in sorted(pkg.exports, key=lambda x: -x.serial_size):
             if e.serial_size == 0:
                 continue
-            cls = self.export_class(pkg)
-            r = pkg.export_reader(e)
-            head, ok = pkg.read_properties(r)
+            try:
+                r = pkg.export_reader(e)
+                head, ok = pkg.read_properties(r)
+            except Exception:
+                continue
             if "RowStruct" not in head:
                 continue
             d = r.d
@@ -394,14 +396,20 @@ class AssetDB:
             while r.p + 8 <= len(d) and len(rows) < max_rows:
                 if _time.time() - _t0 > time_budget:
                     break
-                idx, num = struct.unpack_from("<2i", d, r.p)
+                try:
+                    idx, num = struct.unpack_from("<2i", d, r.p)
+                except struct.error:
+                    break
                 if none_i >= 0 and idx == none_i:
                     break
                 nm = pkg.names[idx] if 0 <= idx < len(pkg.names) else None
                 if nm is None:
                     break
                 r.p += 8
-                props, ok = pkg.read_properties(r)
+                try:
+                    props, ok = pkg.read_properties(r)
+                except Exception:
+                    break
                 if not ok:
                     break
                 vals = {}
@@ -506,6 +514,27 @@ class AssetDB:
                 return base.rstrip("/") + "/" + nm
         return nm
 
+    def _textures_from_package_hints(self, pkg):
+        """材质包的 Package 导入常指向纹理路径 (商用特效包模式), 尝试加载"""
+        out = []
+        for i, (cp, cn, outer, nm, num) in enumerate(pkg.imports, 1):
+            if cn != "Package":
+                continue
+            full = nm
+            if not full or not full.startswith("/Game/"):
+                continue
+            pp = self.game_path_to_pak(full)
+            if (pp + ".uasset") in self.entries:
+                try:
+                    tp = self.package_of(pp)
+                    if self.export_class(tp) == "Texture2D":
+                        ti = self.texture_info(pp)
+                        if ti and ti.get("mip"):
+                            out.append(pp)
+                except Exception:
+                    pass
+        return out
+
     def _textures_of_material(self, path, depth=0, seen=None):
         """MIC/Material → 其引用的 Texture2D pak 路径"""
         if seen is None:
@@ -530,6 +559,9 @@ class AssetDB:
                 out.append(self.game_path_to_pak(full))
             elif cn in ("MaterialInstanceConstant", "Material") and full and full.startswith("/Game/"):
                 out.extend(self._textures_of_material(full, depth + 1, seen))
+        # 商用特效包: 材质的 Package 导入即纹理引用
+        if not out:
+            out.extend(self._textures_from_package_hints(pkg))
         return out
 
     def particle_info(self, stem: str):
@@ -563,6 +595,34 @@ class AssetDB:
                 if t not in seen:
                     seen.add(t)
                     texs.append(t)
+        # 回退: 材质链无纹理时, 沿目录树上溯找纹理目录 (商用特效包 2_Material/3_Texture 结构)
+        if not texs:
+            dirp = stem.rsplit("/", 1)[0]
+            dirs = dirp.split("/")
+            found_base = None
+            for up in range(1, min(5, len(dirs))):
+                base = "/".join(dirs[:len(dirs) - up])
+                if not base:
+                    break
+                for texdir in ("3_Texture", "Texture", "Textures", "texture"):
+                    tp = base + "/" + texdir
+                    if any(s.startswith(tp + "/") for s in self.groups):
+                        found_base = tp
+                        break
+                if found_base:
+                    break
+            if found_base:
+                for cand in sorted(self.groups):
+                    if cand.startswith(found_base + "/") and (cand + ".uasset") in self.entries:
+                        try:
+                            ti = self.texture_info(cand)
+                            if ti and ti.get("mip") and ti["w"] >= 64:
+                                texs.append(cand)
+                        except Exception:
+                            pass
+                        if len(texs) >= 4:
+                            break
+
         # 路径规范化 (对象路径 → 包路径) + 过滤有效纹理
         valid = []
         vseen = set()
