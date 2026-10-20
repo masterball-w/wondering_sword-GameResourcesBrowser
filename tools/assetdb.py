@@ -371,3 +371,122 @@ class AssetDB:
         if not atlas:
             return None
         return fb["fps"], frames, atlas
+
+    # ---------------------------------------------- 数据表
+    def datatable_info(self, stem: str, max_rows=3000, time_budget=15.0):
+        """DataTable → (columns, rows[(行名, {列: 值})])"""
+        pkg = self.package_of(stem)
+        none_i = pkg.names.index("None") if "None" in pkg.names else -1
+        cols = []
+        rows = []
+        for e in pkg.exports:
+            if e.serial_size == 0:
+                continue
+            cls = self.export_class(pkg)
+            r = pkg.export_reader(e)
+            head, ok = pkg.read_properties(r)
+            if "RowStruct" not in head:
+                continue
+            d = r.d
+            r.p += 8      # 表头后 8 字节 (计数/引用)
+            import time as _time
+            _t0 = _time.time()
+            while r.p + 8 <= len(d) and len(rows) < max_rows:
+                if _time.time() - _t0 > time_budget:
+                    break
+                idx, num = struct.unpack_from("<2i", d, r.p)
+                if none_i >= 0 and idx == none_i:
+                    break
+                nm = pkg.names[idx] if 0 <= idx < len(pkg.names) else None
+                if nm is None:
+                    break
+                r.p += 8
+                props, ok = pkg.read_properties(r)
+                if not ok:
+                    break
+                vals = {}
+                for k, v in props.items():
+                    if k not in cols:
+                        cols.append(k)
+                    vals[k] = v[1] if isinstance(v, tuple) else v
+                rows.append((nm, vals))
+            return cols, rows
+        return None
+
+    # ---------------------------------------------- 模型(点云)
+    def mesh_info(self, stem: str, max_points=60000):
+        """StaticMesh/SkeletalMesh → 顶点位置点云 (扫描 cooked 顶点流)"""
+        pkg = self.package_of(stem)
+        e = max((x for x in pkg.exports if x.serial_size > 0), key=lambda x: x.serial_size, default=None)
+        if e is None:
+            return None
+        d = pkg.export_reader(e).d
+        r = Reader(d)
+        try:
+            pkg.read_properties(r)
+        except Exception:
+            pass
+        start_scan = r.p
+        streams = []
+
+        def f32_ok(p, n):
+            for i in range(n):
+                x, y, z = struct.unpack_from("<3f", d, p + i * 12)
+                for v in (x, y, z):
+                    if not (-1e5 < v < 1e5) or v != v:
+                        return False
+            return True
+
+        def half_ok(p, n):
+            # FP16 xyz + 2B 填充 (stride 8)
+            for i in range(n):
+                a, b, c = struct.unpack_from("<3H", d, p + i * 8)
+                for h in (a, b, c):
+                    if h >= 0x7C00:
+                        return False
+            return True
+
+        p = start_scan
+        while p + 8 < len(d) - 12 and len(streams) < 6:
+            stride, cnt = struct.unpack_from("<2I", d, p)
+            if stride == 12 and 4 <= cnt <= 200000 and p + 8 + cnt * 12 <= len(d) and f32_ok(p + 8, cnt):
+                pts = struct.unpack_from(f"<{cnt*3}f", d, p + 8)
+                streams.append((cnt, pts))
+                p = p + 8 + cnt * 12
+                continue
+            if stride == 8 and 8 <= cnt <= 200000 and p + 8 + cnt * 8 <= len(d) and half_ok(p + 8, cnt):
+                pts = []
+                ok = True
+                for i in range(cnt):
+                    a, b, c = struct.unpack_from("<3H", d, p + 8 + i * 8)
+                    for h, sh in ((a, 0), (b, 1), (c, 2)):
+                        s = -(h >> 15) & 1
+                        e5 = (h >> 10) & 0x1F
+                        m = h & 0x3FF
+                        if e5 == 0:
+                            v = m * 2.0 ** -24
+                        else:
+                            v = (1 + m / 1024.0) * 2.0 ** (e5 - 15)
+                        pts.append(-v if s else v)
+                streams.append((cnt, tuple(pts)))
+                p = p + 8 + cnt * 8
+                continue
+            p += 1
+        if not streams:
+            return None
+        streams.sort(key=lambda s: -s[0])
+        total = 0
+        pts_out = []
+        for cnt, pts in streams:
+            take = min(cnt, max_points - total)
+            if take <= 0:
+                break
+            pts_out.extend(pts[:take * 3])
+            total += take
+        xs = pts_out[0::3]; ys = pts_out[1::3]; zs = pts_out[2::3]
+        return dict(
+            n=total,
+            lods=[c for c, _ in streams],
+            bbox=[min(xs), min(ys), min(zs), max(xs), max(ys), max(zs)],
+            pts=[round(v, 3) for v in pts_out],
+        )

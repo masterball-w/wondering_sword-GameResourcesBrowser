@@ -406,6 +406,9 @@ class Package:
             return r.fstring()
         if ptype in ("ObjectProperty", "WeakObjectProperty", "LazyObjectProperty", "InterfaceProperty"):
             return r.i32()
+        if ptype == "SoftObjectProperty":
+            self._fname(r)          # 引用 FName
+            return r.fstring()      # 资产路径
         if ptype == "ByteProperty":
             v = r.raw(size)
             n = int.from_bytes(v, "little") if len(v) <= 8 else None
