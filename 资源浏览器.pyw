@@ -361,7 +361,7 @@ async function render(it,a){
       <button id="fgif">导出 GIF</button>
       <span class="dim" id="fstat"></span></div>
       <canvas id="cv" style="image-rendering:pixelated"></canvas><div id="frames"></div><div class="meta" id="tinfo"></div>`;
-    await showAnimSeq(a);
+    await showAnimSeq(a, it.p);
   }else if(a.kind==='flipbook'){
     body.innerHTML=`<div class="btns"><button id="play">▶ 播放</button>
       <button onclick="loc2('/api/gif?path=${enc(it.p)}')">导出 GIF 动画</button>
@@ -633,7 +633,7 @@ function bc5(buf,w,h,px){
 }
 
 // ---------- 翻页动画 ----------
-async function showAnimSeq(a){
+async function showAnimSeq(a, assetPath){
   const t=await fetchTex(a.texUrl);
   const off=document.createElement('canvas');off.width=t.w;off.height=t.h;
   drawTexture(off.getContext('2d'),t.buf,t.w,t.h,t.fmt);
@@ -654,12 +654,15 @@ async function showAnimSeq(a){
     const f=F[i];
     const sy=t.h-f.y-f.h;
     ctx.drawImage(off,f.x,sy,f.w,f.h,0,0,cv.width,cv.height);
-    const [s,e]=range();
-    $('fstat').textContent=`帧 ${i+1}/${F.length} (播放 ${s+1}~${e+1}) · ${f.name||f.n} (${f.x},${f.y})`;
+    // 当前帧高亮 (白色边框, 仅这一帧)
+    document.querySelectorAll('#frames canvas').forEach((c,k)=>{
+      c.style.outline=k===i?'2px solid #fff':'none';
+    });
   }
   function play(){
     playing=!playing;
     $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
+    clearInterval(timer);
     if(playing){
       timer=setInterval(()=>{
         const [s,e]=range();
@@ -669,13 +672,18 @@ async function showAnimSeq(a){
         draw(cur);
       },1000/a.fps);
     }
-    else clearInterval(timer);
   }
   $('play').onclick=play;
   $('fgif').onclick=()=>{
     const [s,e]=range();
     const f0=F[s],f1=F[e];
-    loc2(`/api/gif?path=${enc0(it.p)}&start=${f0.n}&end=${f1.n}`);
+    const url=`/api/gif?path=${encodeURIComponent(assetPath)}&start=${f0.n}&end=${f1.n}`;
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=assetPath.split('/').pop()+'.gif';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   };
   // 帧条高亮当前范围
   function updateHl(){
@@ -684,6 +692,8 @@ async function showAnimSeq(a){
       c.style.borderColor=(k>=s&&k<=e)?'#5aa2ff':'#2e333d';
       c.style.opacity=(k>=s&&k<=e)?'1':'0.3';
     });
+    const baseName=assetPath.split('/').pop().replace(/_\d+$/,'');
+    $('fstat').textContent=`${baseName} [帧 ${F[s].n}~${F[e].n}] · ${e-s+1}帧/${F.length}帧`;
   }
   $('fstart').oninput=$('fend').oninput=()=>{updateHl();if(!playing)draw(cur)};
   const fr=$('frames');
@@ -695,7 +705,7 @@ async function showAnimSeq(a){
     c.onclick=()=>{cur=i;draw(i)};
     fr.appendChild(c);
   });
-  draw(0);updateHl();setTimeout(play,300);
+  updateHl();draw(0);setTimeout(play,300);
 }
 
 async function showFlipbook(a){
