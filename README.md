@@ -38,9 +38,11 @@
 | 🎬 动效播放 | PaperFlipbook 翻页动画逐帧预览与自动播放，含帧坐标 |
 | 🎵 音频播放 | SoundWave (OGG) 页面内直接播放 |
 | 📖 剧情文本 | .locres 本地化文本全量浏览与过滤（含全部中文文本） |
+| 🎞️ 序列动画 | 自动识别精灵序列（如 PG_Sprite_14 → 20 帧连续动画），支持 GIF 导出 |
 | 📊 数据表格 | DataTable 真实表格预览（行×列、双击复制） |
 | 🧊 模型预览 | Static/Skeletal Mesh 顶点点云 3D 预览（拖动旋转/缩放） |
 | ✨ 粒子特效 | ParticleSystem 材质纹理链解析 + 实时粒子模拟（SubUV 图集动画/加法混合） |
+| 🎁 GIF 导出 | 翻页动画 / 精灵序列一键导出为 GIF 动画 |
 | 📦 多格式导出 | PNG / OGG / TXT / 全帧 zip / 原始 uasset+uexp zip |
 | 🛠️ 资源替换 | 补丁 pak 秒级打包（放游戏 Paks 目录即生效）或完整 pak 重建 |
 

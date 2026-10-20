@@ -351,8 +351,15 @@ async function render(it,a){
     body.innerHTML=`<div class="btns"><button onclick="loc2('/api/png?path=${enc(it.p)}')">导出 PNG</button></div>
       <canvas id="cv" style="image-rendering:pixelated"></canvas><div class="meta" id="tinfo"></div>`;
     await showSprite(a);
+  }else if(a.kind==='animseq'){
+    body.innerHTML=`<div class="btns"><button id="play">▶ 播放</button>
+      <button onclick="loc2('/api/gif?path=${enc(it.p)}')">导出 GIF 动画</button>
+      <span class="dim" id="fstat"></span></div>
+      <canvas id="cv" style="image-rendering:pixelated"></canvas><div id="frames"></div><div class="meta" id="tinfo"></div>`;
+    await showAnimSeq(a);
   }else if(a.kind==='flipbook'){
     body.innerHTML=`<div class="btns"><button id="play">▶ 播放</button>
+      <button onclick="loc2('/api/gif?path=${enc(it.p)}')">导出 GIF 动画</button>
       <button id="expcur">导出当前帧 PNG</button>
       <button onclick="loc2('/api/frames?path=${enc(it.p)}')">导出全部帧 PNG (zip)</button>
       <span class="dim" id="fstat"></span></div>
@@ -621,6 +628,43 @@ function bc5(buf,w,h,px){
 }
 
 // ---------- 翻页动画 ----------
+async function showAnimSeq(a){
+  const t=await fetchTex(a.texUrl);
+  const off=document.createElement('canvas');off.width=t.w;off.height=t.h;
+  drawTexture(off.getContext('2d'),t.buf,t.w,t.h,t.fmt);
+  $('tinfo').innerHTML=`图集 <b>${t.w}×${t.h}</b> ${t.fmt} · ${a.frames.length} 帧 · ${a.fps} FPS`;
+  const cv=$('cv');const F=a.frames;
+  const maxw=Math.max(...F.map(f=>f.w)),maxh=Math.max(...F.map(f=>f.h));
+  cv.width=maxw*2;cv.height=maxh*2;
+  cv.style.maxWidth=maxw*4+'px';
+  const ctx=cv.getContext('2d');ctx.imageSmoothingEnabled=false;
+  let cur=0,playing=false,timer=null;
+  function draw(i){
+    ctx.clearRect(0,0,cv.width,cv.height);
+    const f=F[i];
+    const sy=t.h-f.y-f.h;
+    ctx.drawImage(off,f.x,sy,f.w,f.h,0,0,cv.width,cv.height);
+    $('fstat').textContent=`帧 ${i+1}/${F.length} · ${f.name||f.n} (${f.x},${f.y}) ${f.w}×${f.h}`;
+  }
+  function play(){
+    playing=!playing;
+    $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
+    if(playing)timer=setInterval(()=>{cur=(cur+1)%F.length;draw(cur)},1000/a.fps);
+    else clearInterval(timer);
+  }
+  $('play').onclick=play;
+  const fr=$('frames');
+  F.forEach((f,i)=>{
+    const c=document.createElement('canvas');c.width=f.w;c.height=f.h;
+    c.style.cssText='width:48px;height:48px;object-fit:contain;image-rendering:pixelated;cursor:pointer';
+    const sy=t.h-f.y-f.h;
+    c.getContext('2d').drawImage(off,f.x,sy,f.w,f.h,0,0,f.w,f.h);
+    c.onclick=()=>{cur=i;draw(i)};
+    fr.appendChild(c);
+  });
+  draw(0);setTimeout(play,300);
+}
+
 async function showFlipbook(a){
   const t=await fetchTex(a.texUrl);
   const off=document.createElement('canvas');off.width=t.w;off.height=t.h;
@@ -831,6 +875,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._bin(txt.encode("utf-8"), "text/plain; charset=utf-8",
                           {"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"})
                 return
+            if u.path == "/api/gif":
+                self._api_gif(q)
+                return
             if u.path == "/api/audio":
                 self._api_audio(q.get("path", [""])[0])
                 return
@@ -884,6 +931,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(dict(kind="props", type="贴图", note="无可解码 mip 数据"))
             return
         if cls == "PaperSprite":
+            # 序列帧检测: PG_Sprite_14 → 全序列动画
+            seq_frames = None
+            try:
+                seq_frames = DB.sprite_seq_frames(stem)
+            except Exception:
+                pass
+            if seq_frames and len(seq_frames) >= 2:
+                atlas = seq_frames[0]["tex"] if seq_frames else None
+                t0 = DB.texture_info(atlas) if atlas else None
+                if t0 and t0.get("mip"):
+                    self._json(dict(kind="animseq", type="精灵序列动画",
+                                    fps=10, frames=seq_frames, note=f'{len(seq_frames)} 帧序列',
+                                    texPath=atlas,
+                                    texUrl="/api/tex?path=" + urllib.parse.quote(atlas)))
+                    return
             sp = DB.sprite_info(stem)
             if sp and sp.get("tex"):
                 t = DB.texture_info(sp["tex"])
@@ -1017,6 +1079,40 @@ class Handler(BaseHTTPRequestHandler):
                 z.writestr(f"frame_{i:03d}_{f['name']}.png", png)
         fn = urllib.parse.quote(stem.split("/")[-1]) + "_frames.zip"
         self._bin(buf.getvalue(), "application/zip",
+                  {"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"})
+
+    def _api_gif(self, q):
+        stem = q.get("path", [""])[0]
+        fps = int(q.get("fps", ["10"])[0])
+        frames = None
+        # 1) 精灵序列
+        try:
+            frames = DB.sprite_seq_frames(stem)
+        except Exception:
+            pass
+        # 2) PaperFlipbook
+        if not frames:
+            try:
+                rfb = resolve_flipbook(stem)
+                if rfb:
+                    _, fbs, atlas = rfb
+                    frames = [dict(n=i, x=f["x"], y=f["y"], w=f["w"], h=f["h"],
+                                   tex=atlas, name=f["name"]) for i, f in enumerate(fbs)]
+            except Exception:
+                pass
+        if not frames:
+            self._json({"err": "无帧数据"}, 404)
+            return
+        try:
+            gif = DB.gif_from_frames(frames, fps=fps)
+        except Exception as ex:
+            self._json({"err": f"GIF 生成失败: {ex}"}, 500)
+            return
+        if not gif:
+            self._json({"err": "GIF 为空"}, 500)
+            return
+        fn = urllib.parse.quote(stem.rsplit("/", 1)[-1]) + ".gif"
+        self._bin(gif, "image/gif",
                   {"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"})
 
     def _api_audio(self, stem: str):

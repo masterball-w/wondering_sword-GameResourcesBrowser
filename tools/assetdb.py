@@ -641,3 +641,101 @@ class AssetDB:
             if len(valid) >= 8:
                 break
         return dict(emitters=len(emitters), modules=sorted(modules), textures=valid)
+
+    # ---------------------------------------------- 精灵序列动画
+    def sprite_sequence(self, stem: str):
+        """PG_Sprite_14 → 全序列 [(帧号, 精灵stem)]; 无序列返回 None"""
+        import re
+        dirp = stem.rsplit("/", 1)[0]
+        name = stem.rsplit("/", 1)[-1]
+        m = re.match(r"^(.*?)(?:_(\d+))$", name)
+        if not m:
+            return None
+        base = m.group(1)
+        first = int(m.group(2))
+        siblings = []
+        for s in self.groups:
+            nm = s.rsplit("/", 1)[-1]
+            if not s.startswith(dirp + "/"):
+                continue
+            mm = re.match(rf"^{re.escape(base)}_(\d+)$", nm)
+            if mm and (s + ".uasset") in self.entries:
+                siblings.append((int(mm.group(1)), s))
+        if len(siblings) < 2:
+            return None
+        siblings.sort()
+        return base, siblings
+
+    def sprite_seq_frames(self, stem: str, max_frames=60):
+        """精灵序列 → [(帧号, uv, dim, tex_stem)]"""
+        seq = self.sprite_sequence(stem)
+        if not seq:
+            return None
+        base, siblings = seq
+        frames = []
+        for num, s in siblings[:max_frames]:
+            sp = self.sprite_info(s)
+            if sp and sp.get("tex"):
+                frames.append(dict(n=num, x=int(sp["uv"][0]), y=int(sp["uv"][1]),
+                                   w=int(sp["dim"][0]), h=int(sp["dim"][1]),
+                                   tex=sp["tex"], name=s.rsplit("/", 1)[-1]))
+        return frames if frames else None
+
+    def gif_from_frames(self, frame_rects, fps=10, max_size=512):
+        """帧矩形列表 → GIF bytes (Pillow)"""
+        from PIL import Image
+        from texdec import decode_texture
+        images = []
+        # 同一图集只解码一次
+        atlas_cache = {}
+        max_w = max_h = 0
+        for fr in frame_rects:
+            tex_stem = fr["tex"]
+            if tex_stem not in atlas_cache:
+                t = self.texture_info(tex_stem)
+                if not t or not t.get("mip"):
+                    continue
+                rgba = decode_texture(t["mip"]["data"], t["w"], t["h"], t["fmt"])
+                atlas_cache[tex_stem] = (t["w"], t["h"], rgba)
+            aw, ah, rgba = atlas_cache[tex_stem]
+            x, y, w, h = fr["x"], fr["y"], fr["w"], fr["h"]
+            # UV 坐标系: 左下原点 → 裁剪时翻转 Y
+            cy = ah - y - h
+            cy = max(0, min(cy, ah - 1))
+            h2 = min(h, ah - cy)
+            w2 = min(w, aw - x)
+            img = Image.new("RGBA", (w2, h2), (0, 0, 0, 0))
+            for row in range(h2):
+                src_off = ((cy + row) * aw + x) * 4
+                dst_off = row * w2 * 4
+                img.frombytes  # noop
+            # 用 frombytes 更快
+            crop_data = bytearray()
+            for row in range(h2):
+                src_off = ((cy + row) * aw + x) * 4
+                crop_data += rgba[src_off:src_off + w2 * 4]
+            img = Image.frombytes("RGBA", (w2, h2), bytes(crop_data))
+            images.append(img)
+            max_w = max(max_w, w2)
+            max_h = max(max_h, h2)
+        if not images:
+            return None
+        # 缩放限制
+        scale = min(1.0, max_size / max(max_w, max_h))
+        if scale < 1.0:
+            images = [im.resize((int(im.width * scale), int(im.height * scale)), Image.NEAREST) for im in images]
+            max_w = images[0].width
+            max_h = images[0].height
+        # 统一画布 (底部对齐)
+        canvas_list = []
+        for im in images:
+            c = Image.new("RGBA", (max_w, max_h), (0, 0, 0, 0))
+            c.paste(im, ((max_w - im.width) // 2, max_h - im.height))
+            canvas_list.append(c)
+        # 编码 GIF
+        buf = io.BytesIO()
+        duration_ms = int(1000 / fps)
+        canvas_list[0].save(buf, format="GIF", save_all=True,
+                           append_images=canvas_list[1:], duration=duration_ms,
+                           loop=0, transparency=0, disposal=2)
+        return buf.getvalue()
