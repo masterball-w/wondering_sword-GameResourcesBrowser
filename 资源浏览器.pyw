@@ -45,11 +45,28 @@ for c, lst in cat_list.items():
     for s in lst:
         DB.stem_cat[s] = c
 DB.cat_stems = cat_list
+
+# /ParticleSystem/ 和 /Particles/ 下的资产强制归入 09_特效 (原分类误分到材质/纹理等)
+_fx = "09_特效"
+_fx_set = set(cat_list.get(_fx, []))
+for _s in DB.groups:
+    if "/ParticleSystem/" in _s or "/Particles/" in _s:
+        if _s not in _fx_set:
+            old_cat = DB.stem_cat.get(_s)
+            if old_cat and old_cat in cat_list:
+                try:
+                    cat_list[old_cat].remove(_s)
+                except ValueError:
+                    pass
+            DB.stem_cat[_s] = _fx
+            _fx_set.add(_s)
+cat_list[_fx] = sorted(_fx_set)
 print(f"就绪: {len(DB.entries):,} 文件, {len(cat_list)} 类", flush=True)
 
 LOCRES_PATHS = sorted(p for p in DB.entries if p.endswith(".locres"))
 
 TREE_CACHE = {}
+DT_CACHE = {}
 
 
 def build_tree(cat: str):
@@ -668,17 +685,23 @@ boot();
 
 # ================================================================ 服务
 
-def json_safe(o):
-    """属性值转 JSON 安全类型"""
+def json_safe(o, depth=0):
+    """属性值转 JSON 安全类型 (限制深度和总大小)"""
     if isinstance(o, bytes):
-        s = o[:32].hex()
-        return f"<bytes {len(o)}B: {s}{'…' if len(o) > 32 else ''}>"
-    if isinstance(o, tuple):
-        return [json_safe(x) for x in o]
-    if isinstance(o, list):
-        return [json_safe(x) for x in o]
+        s = o[:16].hex()
+        return f"<{len(o)}B {s}…>" if len(o) > 16 else f"<{s}>"
+    if isinstance(o, (tuple, list)):
+        if depth > 3:
+            return f"[{len(o)}项…]"
+        return [json_safe(x, depth + 1) for x in o[:50]]
     if isinstance(o, dict):
-        return {k: json_safe(v) for k, v in o.items()}
+        if depth > 3:
+            return "{…}"
+        return {str(k): json_safe(v, depth + 1) for k, v in list(o.items())[:30]}
+    if isinstance(o, str) and len(o) > 300:
+        return o[:300] + "…"
+    if isinstance(o, float) and (o != o or o in (float('inf'), float('-inf'))):
+        return 0
     return o
 
 
@@ -899,15 +922,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(dict(kind="props", type="SoundCue 混音", note="引用其他 SoundWave"))
             return
         if cls == "DataTable":
-            try:
-                dt = DB.datatable_info(stem)
-            except Exception:
-                dt = None
+            dt = DT_CACHE.get(stem)
+            if dt is None:
+                try:
+                    dt = DB.datatable_info(stem, max_rows=100, time_budget=25.0)
+                    DT_CACHE[stem] = dt
+                except Exception:
+                    dt = None
             if dt:
                 cols, rows = dt
                 self._json(dict(kind="datatable", type="数据表格",
                                 cols=cols,
-                                rows=[[rn] + [json_safe(v.get(c)) for c in cols] for rn, v in rows[:2000]],
+                                rows=[[rn] + [json_safe(v.get(c), 1) for c in cols] for rn, v in rows[:2000]],
                                 note=f"{len(rows)} 行 × {len(cols)} 列"))
                 return
             self._json(dict(kind="props", type="数据表格", note="行数据解析失败"))

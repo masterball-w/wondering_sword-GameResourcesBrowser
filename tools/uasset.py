@@ -433,6 +433,22 @@ class Package:
             return r.fstring()
         if ptype in ("ObjectProperty", "WeakObjectProperty", "LazyObjectProperty", "InterfaceProperty"):
             return r.i32()
+        if ptype == "TextProperty":
+            # cooked FText: flags i32 + history u8; history=0xFF 表示由 locres 管理
+            start = r.p
+            if size <= 1:
+                return "<空>"
+            r.raw(4)   # flags
+            hist = r.u8()
+            result = "<本地化文本>"
+            if hist == 1:   # Base: namespace + key + source
+                ns = r.fstring()
+                key = r.fstring()
+                src_str = r.fstring()
+                result = src_str or key or ns or "<空>"
+            # 确保消费精确 size 字节
+            r.p = start + size
+            return result
         if ptype == "SoftObjectProperty":
             self._fname(r)          # 引用 FName
             return r.fstring()      # 资产路径
