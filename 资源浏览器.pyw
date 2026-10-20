@@ -732,7 +732,6 @@ async function showFlipbook(a){
     $('fstat').textContent=`帧 ${i+1}/${F.length} · (${f.x},${f.y}) ${f.w}×${f.h}`;
     document.querySelectorAll('#frames canvas').forEach((c,k)=>c.style.borderColor=k===i?'#5aa2ff':'#2e333d');
   }
-  const myToken=++ANIM_TOKEN;
   function play(){
     playing=!playing;
     $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
