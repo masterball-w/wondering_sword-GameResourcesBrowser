@@ -326,6 +326,7 @@ function fileBtns(it){
 }
 function loc2(u){location.href=u;}
 const enc0=encodeURIComponent;
+let ANIM_TOKEN=0;
 function dl(p){location.href='/api/file?path='+encodeURIComponent(p+'.uasset');}
 async function showSprite(a){
   const t=await fetchTex(a.texUrl);
@@ -643,6 +644,7 @@ async function showAnimSeq(a, assetPath){
   cv.width=maxw*2;cv.height=maxh*2;
   cv.style.maxWidth=maxw*4+'px';
   const ctx=cv.getContext('2d');ctx.imageSmoothingEnabled=false;
+  const myToken=++ANIM_TOKEN;
   let cur=0,playing=false,timer=null;
   function range(){
     const s=Math.max(0,parseInt($('fstart').value)||0);
@@ -663,8 +665,10 @@ async function showAnimSeq(a, assetPath){
     playing=!playing;
     $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
     clearInterval(timer);
+    timer=null;
     if(playing){
       timer=setInterval(()=>{
+        if(!playing||myToken!==ANIM_TOKEN){clearInterval(timer);return;}
         const [s,e]=range();
         cur=cur+1;
         if(cur>e)cur=s;
@@ -673,7 +677,7 @@ async function showAnimSeq(a, assetPath){
       },1000/a.fps);
     }
   }
-  $('play').onclick=play;
+  $('play').onclick=()=>{clearInterval(timer);timer=null;play()};
   $('fgif').onclick=()=>{
     const [s,e]=range();
     const f0=F[s],f1=F[e];
@@ -717,6 +721,7 @@ async function showFlipbook(a){
   const maxw=Math.max(...F.map(f=>f.w)),maxh=Math.max(...F.map(f=>f.h));
   cv.width=maxw;cv.height=maxh;
   const ctx=cv.getContext('2d');
+  const myToken=++ANIM_TOKEN;
   let cur=0,playing=false,timer=null;
   function draw(i){
     ctx.clearRect(0,0,cv.width,cv.height);
@@ -727,13 +732,19 @@ async function showFlipbook(a){
     $('fstat').textContent=`帧 ${i+1}/${F.length} · (${f.x},${f.y}) ${f.w}×${f.h}`;
     document.querySelectorAll('#frames canvas').forEach((c,k)=>c.style.borderColor=k===i?'#5aa2ff':'#2e333d');
   }
+  const myToken=++ANIM_TOKEN;
   function play(){
     playing=!playing;
     $('play').textContent=playing?'⏸ 暂停':'▶ 播放';
-    if(playing)timer=setInterval(()=>{cur=(cur+1)%F.length;draw(cur)},1000/a.fps);
-    else clearInterval(timer);
+    clearInterval(timer);timer=null;
+    if(playing){
+      timer=setInterval(()=>{
+        if(!playing||myToken!==ANIM_TOKEN){clearInterval(timer);return;}
+        cur=(cur+1)%F.length;draw(cur);
+      },1000/a.fps);
+    }
   }
-  $('play').onclick=play;
+  $('play').onclick=()=>{clearInterval(timer);timer=null;play()};
   $('expcur').onclick=()=>{
     const f=F[cur];
     loc2('/api/png?path='+enc0(a.texPath)+`&x=${f.x}&y=${f.y}&w=${f.w}&h=${f.h}`);
