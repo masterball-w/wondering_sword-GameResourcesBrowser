@@ -156,6 +156,7 @@ button:hover{border-color:var(--acc);color:var(--acc)}
 table.kv{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
 table.kv td{border:1px solid var(--line);padding:4px 8px;vertical-align:top}
 table.kv td:first-child{color:var(--dim);width:160px;white-space:nowrap}
+.dt td,.dt th{max-width:280px;overflow:hidden;text-overflow:ellipsis}
 .lofilter{width:100%;margin-bottom:8px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:6px 10px;border-radius:6px}
 #frames{display:flex;gap:4px;flex-wrap:wrap;margin:8px 0}
 #frames canvas{width:64px;height:64px;object-fit:contain;image-rendering:pixelated;cursor:pointer;border:1px solid var(--line)}
@@ -343,6 +344,21 @@ async function render(it,a){
   }else if(a.kind==='sound'){
     body.innerHTML=`<div class="btns"><button onclick="loc2('/api/ogg?path=${enc(it.p)}')">导出 OGG 音频</button></div>
       <div class="meta">${a.info}</div><audio controls src="/api/audio?path=${enc(it.p)}"></audio>`;
+  }else if(a.kind==='datatable'){
+    body.innerHTML=`<div class="meta">共 ${a.rows.length} 行 · 双击单元格复制</div>
+      <div style="max-height:64vh;overflow:auto;border:1px solid var(--line)">
+      <table class="dt" style="border-collapse:collapse;font-size:11px;white-space:nowrap">
+      <thead style="position:sticky;top:0;background:var(--panel2)"><tr>
+        <th style="padding:3px 8px;border:1px solid var(--line);color:var(--acc)">#行名</th>
+        ${a.cols.map(c=>`<th style="padding:3px 8px;border:1px solid var(--line)">${esc(String(c))}</th>`).join('')}
+      </tr></thead><tbody>
+      ${a.rows.map(r=>`<tr>${r.map((c,i)=>`<td style="padding:2px 8px;border:1px solid var(--line);${i===0?'color:var(--ok)':''}" title="${esc(String(c))}" ondblclick="navigator.clipboard.writeText(String.raw\`${esc(String(c)).replace(/`/g,'')}\`)">${esc(fmtv(c))}</td>`).join('')}</tr>`).join('')}
+      </tbody></table></div>`;
+  }else if(a.kind==='mesh'){
+    body.innerHTML=`<div class="btns"><span class="dim" id="mstat"></span></div>
+      <canvas id="cv3d" style="width:100%;height:60vh;background:#0d0f13;border:1px solid var(--line);cursor:grab"></canvas>
+      <div class="meta">拖动旋转 · 滚轮缩放 · ${a.note} · LOD 顶点: ${a.lods.join(' / ')}</div>`;
+    showMesh(a);
   }else if(a.kind==='locres'){
     showLocres(a, it.p);
   }else if(a.kind==='props'){
@@ -350,6 +366,60 @@ async function render(it,a){
   }
 }
 function esc(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function fmtv(v){
+  if(v===null||v===undefined)return '';
+  if(typeof v==='object'){
+    try{let s=JSON.stringify(v);return s.length>60?s.slice(0,60)+'…':s;}catch(e){return String(v);}
+  }
+  const s=String(v);return s.length>80?s.slice(0,80)+'…':s;
+}
+function showMesh(a){
+  const cv=$('cv3d');
+  const dpr=window.devicePixelRatio||1;
+  cv.width=cv.clientWidth*dpr;cv.height=cv.clientHeight*dpr;
+  const ctx=cv.getContext('2d');ctx.scale(dpr,dpr);
+  const W=cv.clientWidth,H=cv.clientHeight;
+  const pts=a.pts,N=a.n;
+  const bb=a.bbox;
+  const cx=(bb[0]+bb[3])/2,cy=(bb[1]+bb[4])/2,cz=(bb[2]+bb[5])/2;
+  const r=Math.max(bb[3]-bb[0],bb[4]-bb[1],bb[5]-bb[2],1)/2;
+  let rotX=-0.4,rotY=0.6,zoom=1,dist=3.2;
+  let drag=null;
+  function draw(){
+    ctx.fillStyle='#0d0f13';ctx.fillRect(0,0,W,H);
+    const cA=Math.cos(rotX),sA=Math.sin(rotX),cB=Math.cos(rotY),sB=Math.sin(rotY);
+    const sc=Math.min(W,H)/(r*dist)*zoom;
+    // 按深度排序绘制
+    const proj=[];
+    for(let i=0;i<N;i++){
+      let x=(pts[i*3]-cx)/r,y=(pts[i*3+1]-cy)/r,z=(pts[i*3+2]-cz)/r;
+      // UE Z 向上 → 屏幕 Y 翻转
+      let y1=y*cA-z*sA, z1=y*sA+z*cA;
+      let x2=x*cB-y1*sB, y2=x*sB+y1*cB;
+      const depth=z1;
+      const px=W/2+x2*sc, py=H/2-y2*sc;
+      if(px>=-20&&px<W+20&&py>=-20&&py<H+20)proj.push([px,py,depth]);
+    }
+    proj.sort((p,q)=>p[2]-q[2]);
+    const dzmin=proj.length?proj[0][2]:-1,dzmax=proj.length?proj[proj.length-1][2]:1;
+    for(const [px,py,dz] of proj){
+      const t=(dz-dzmin)/((dzmax-dzmin)||1);
+      const s=1.6;
+      ctx.fillStyle=`rgba(${100+t*140|0},${170+t*60|0},${220-t*60|0},${0.45+t*0.55})`;
+      ctx.fillRect(px-s/2,py-s/2,s,s);
+    }
+    $('mstat').textContent=`${N} 顶点 · 旋转 ${(-rotY*57.3)|0}° 俯角 ${(rotX*57.3)|0}° · 缩放 ${zoom.toFixed(1)}x`;
+  }
+  cv.onmousedown=e=>{drag={x:e.offsetX,y:e.offsetY};cv.style.cursor='grabbing'};
+  cv.onmousemove=e=>{if(!drag)return;rotY+=(e.offsetX-drag.x)*0.01;rotX+=(e.offsetY-drag.y)*0.01;drag={x:e.offsetX,y:e.offsetY};draw()};
+  cv.onmouseup=cv.onmouseleave=()=>{drag=null;cv.style.cursor='grab'};
+  cv.onwheel=e=>{e.preventDefault();zoom*=e.deltaY<0?1.1:0.9;zoom=Math.max(0.1,Math.min(20,zoom));draw()};
+  let touch=null;
+  cv.ontouchstart=e=>{touch={x:e.touches[0].clientX,y:e.touches[0].clientY}};
+  cv.ontouchmove=e=>{if(!touch)return;rotY+=(e.touches[0].clientX-touch.x)*0.01;rotX+=(e.touches[0].clientY-touch.y)*0.01;touch={x:e.touches[0].clientX,y:e.touches[0].clientY};draw()};
+  cv.ontouchend=()=>{touch=null};
+  draw();
+}
 
 // ---------- 贴图解码 ----------
 async function fetchTex(url){
@@ -515,6 +585,20 @@ boot();
 
 
 # ================================================================ 服务
+
+def json_safe(o):
+    """属性值转 JSON 安全类型"""
+    if isinstance(o, bytes):
+        s = o[:32].hex()
+        return f"<bytes {len(o)}B: {s}{'…' if len(o) > 32 else ''}>"
+    if isinstance(o, tuple):
+        return [json_safe(x) for x in o]
+    if isinstance(o, list):
+        return [json_safe(x) for x in o]
+    if isinstance(o, dict):
+        return {k: json_safe(v) for k, v in o.items()}
+    return o
+
 
 def resolve_flipbook(stem):
     """翻页书 → (fps, frames[{x,y,w,h,name}], 图集stem); 无 UV 帧按网格回退"""
@@ -732,6 +816,34 @@ class Handler(BaseHTTPRequestHandler):
         if cls == "SoundCue":
             self._json(dict(kind="props", type="SoundCue 混音", note="引用其他 SoundWave"))
             return
+        if cls == "DataTable":
+            try:
+                dt = DB.datatable_info(stem)
+            except Exception:
+                dt = None
+            if dt:
+                cols, rows = dt
+                self._json(dict(kind="datatable", type="数据表格",
+                                cols=cols,
+                                rows=[[rn] + [json_safe(v.get(c)) for c in cols] for rn, v in rows[:2000]],
+                                note=f"{len(rows)} 行 × {len(cols)} 列"))
+                return
+            self._json(dict(kind="props", type="数据表格", note="行数据解析失败"))
+            return
+        base_name = stem.rsplit("/", 1)[-1]
+        if cls in ("StaticMesh", "SkeletalMesh", "NavCollision") or (
+                cls in ("BodySetup",) and base_name.startswith(("SM_", "SK_"))) or (
+                cls and base_name.startswith(("SM_", "SK_"))):
+            try:
+                m = DB.mesh_info(stem)
+            except Exception:
+                m = None
+            if m:
+                self._json(dict(kind="mesh", type=cls + " 点云", n=m["n"], lods=m["lods"],
+                                bbox=m["bbox"], pts=m["pts"], note=f"{m['n']} 顶点"))
+                return
+            self._json(dict(kind="props", type=cls, note="无顶点数据"))
+            return
         # 通用: 属性
         props = {}
         for e in pkg.exports:
@@ -741,7 +853,7 @@ class Handler(BaseHTTPRequestHandler):
                 r = pkg.export_reader(e)
                 pp, ok = pkg.read_properties(r)
                 for k, v in pp.items():
-                    props[f"{e.name}.{k}"] = v[1] if isinstance(v, tuple) else v
+                    props[f"{e.name}.{k}"] = json_safe(v[1] if isinstance(v, tuple) else v)
                 break
             except Exception:
                 pass
